@@ -319,9 +319,9 @@ class Tradebot:
             )
             self.equities[sym]["level"][-level] = price
             del self.equities[sym]["level"][level]
-            print(f"✅ Order placed for {sym} at limit price {price}.")
+            print(f"Order placed for {sym} at limit price {price}.")
         except Exception as e:
-            print(f"❌ Error placing order for {sym}: {e}")
+            print(f"Error placing order for {sym}: {e}")
             messagebox.showerror("Error", f"Failed to place order: {e}")
         
 

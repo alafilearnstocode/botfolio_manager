@@ -8,6 +8,13 @@ import random
 import alpaca_trade_api as tradeapi
 import dotenv
 import os
+import openai
+from azure.ai.inference import ChatCompletionsClient
+from azure.ai.inference.models import SystemMessage, UserMessage
+from azure.core.credentials import AzureKeyCredential
+
+endpoint = "https://models.github.ai/inference"
+model = "openai/gpt-4.1"
 
 DATA_FILE = 'equities.json' #store symbols we're trading and levels
 
@@ -17,17 +24,84 @@ dotenv.load_dotenv()
 key = os.getenv('APCA_API_KEY_ID')
 secret_key = os.getenv('APCA_API_SECRET_KEY')
 BASE_URL = os.getenv('APCA_API_BASE_URL')
+token = os.getenv('GH_TOKEN')
 
 api = tradeapi.REST(key, secret_key, BASE_URL)
+
+def fetch_portfolio_data():
+    positions = api.list_positions()
+    portfolio_data = []
+    for position in positions:
+        portfolio_data.append({
+            "symbol": position.symbol,
+            "qty": position.qty,
+            "avg_entry_price": position.avg_entry_price,
+            "current_price": position.current_price,
+            "market_value": position.market_value,
+            "unrealized_pl": position.unrealized_pl,
+            "cost_basis": position.cost_basis,
+            "side": 'long'
+        })
+    return portfolio_data
+
+def fetch_open_orders_():
+    orders = api.list_orders(status='open')
+    open_orders = []
+    for order in orders:
+        open_orders.append({
+            "symbol": order.symbol,
+            "qty": order.qty,
+            "side": order.side,
+            "type": order.type,
+            "limit_price": order.limit_price,
+            "status": 'long'
+        })
+    return open_orders
 
 def fetch_mock_api(sym):
     return {
         "price" : 100
     }
 
-def llm_response(message):
-    time.sleep(2)  # Simulate a delay for the LLM response
-    return f"LLM response to: {message}"
+
+def llm_response(msg):
+    portfolio_data = fetch_portfolio_data()
+
+    open_orders = fetch_open_orders_()
+
+    pre_prompt = f"""
+
+    You are an AI Portfolio Manager responsible for analysing my portfolio and providing insights.
+    Your tasks are the following:
+    1. Evaluate risk exposures of my current holdings
+    2. Analyse my open limit orders and their potential impact on my portfolio
+    3. Provide insights into the portfolio health, diversification, trade adj. etc
+    4. Speculate on the market outlook based on current market conditions
+    5. Identify potential market risks and suggest risk management strategies
+
+    Here is my portfolio data:
+    {portfolio_data}
+
+    Here are my open limit orders:
+    {open_orders}
+
+    Overall, answer the questions with priority having that background. {msg}
+
+    """
+    client = ChatCompletionsClient(
+    endpoint=endpoint,
+    credential=AzureKeyCredential(token),
+    )
+
+    response = client.complete(
+    messages=[
+        {"role": "user", "content": pre_prompt},
+    ],
+    temperature=1.0,
+    top_p=1.0,
+    model=model
+    )
+    return response['choices'][0]['message']['content']
 
 class Tradebot:
 
@@ -147,7 +221,7 @@ class Tradebot:
         message = self.llm_input.get()
         if not message:
             return
-        response = llm_response(message)
+        response = llm_response(m)
 
         self.llm_output.config(state=tk.NORMAL)
         self.llm_output.insert(tk.END, f"You: {message}\n")
@@ -207,7 +281,8 @@ class Tradebot:
                     time.sleep(2)
                     entry_price = self.get_max_entry_price(sym)
                 print(entry_price)
-                level_prices = {i+1:round(entry_price * (1 - data["drawdown"] * (i+1)), 2) for i in range(len(data["level"]))}
+                num_levels = len([k for k in data["level"].keys() if isinstance(k, int) and k > 0])
+                level_prices = {i+1: round(entry_price * (1 - data["drawdown"] * (i+1)), 2) for i in range(num_levels)}
                 existing_levels = self.equities.get(sym, {}).get("level", {})
                 for level, price in level_prices.items():
                     if level not in existing_levels and -level not in existing_levels:
@@ -228,9 +303,10 @@ class Tradebot:
     
     def place_order(self, sym, price, level):
         if price <= 0:
-            print(f"Skipped placing order for {sym}: invalid price {price}")
+            print(f"⛔ Skipped placing order for {sym}: invalid price {price}")
             return
         if -level in self.equities[sym]["level"] or '-1' in self.equities[sym]["level"].keys():
+            print(f"⚠️ Skipped {sym} level {level}: already placed (found -{level})")
             return
         try:
             api.submit_order(
@@ -243,10 +319,10 @@ class Tradebot:
             )
             self.equities[sym]["level"][-level] = price
             del self.equities[sym]["level"][level]
-            print(f"Order placed for {sym} at limit price {price}.")
+            print(f"✅ Order placed for {sym} at limit price {price}.")
         except Exception as e:
+            print(f"❌ Error placing order for {sym}: {e}")
             messagebox.showerror("Error", f"Failed to place order: {e}")
-            return
         
 
 
